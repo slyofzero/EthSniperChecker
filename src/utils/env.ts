@@ -11,4 +11,5 @@ export const {
   FIREBASE_KEY,
   ENCRYPTION_KEY,
   BOT_INVITE_LINK,
+  ALCHEMY_API_KEY,
 } = process.env;

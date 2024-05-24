@@ -1,14 +1,12 @@
 interface InitLiq {
   usd: string;
-  quote: string;
-  lp_amount: number;
+  eth: string;
   timestamp: number;
-  open_timestamp: number;
 }
 
 interface CurLiq {
-  quote: number;
   usd: string;
+  eth: string;
 }
 
 interface Audit {

@@ -15,10 +15,10 @@ import { CHANNEL_ID } from "@/utils/env";
 import { errorHandler, log } from "@/utils/handlers";
 import moment from "moment";
 import { PhotonPairData } from "@/types/livePairs";
-import { PublicKey } from "@solana/web3.js";
-import { solanaConnection } from "@/rpc";
 import { trackLpBurn } from "./trackLpBurn";
 import { promoText } from "@/vars/promo";
+import { auditToken, getTokenHolders } from "@/ethWeb3/tokenInfo";
+import { isContract } from "@/utils/web3";
 
 export async function sendAlert(pairs: PhotonPairData[]) {
   try {
@@ -52,10 +52,10 @@ export async function sendAlert(pairs: PhotonPairData[]) {
       } else if (
         volume >= VOLUME_THRESHOLD &&
         ageMinutes <= AGE_THRESHOLD &&
-        parseFloat(init_liq.quote) >= LIQUIDITY_THRESHOLD &&
-        parseFloat(init_liq.quote) <= 50 &&
+        parseFloat(init_liq.eth) >= LIQUIDITY_THRESHOLD &&
+        parseFloat(init_liq.eth) <= 50 &&
         marketCap > 0 &&
-        cur_liq.quote > parseFloat(init_liq.quote)
+        Number(cur_liq.eth) > parseFloat(init_liq.eth)
       ) {
         const {
           address,
@@ -66,29 +66,57 @@ export async function sendAlert(pairs: PhotonPairData[]) {
           audit,
         } = pair.attributes;
 
-        const token = new PublicKey(tokenAddress);
-        const addresses = await solanaConnection.getTokenLargestAccounts(token);
-        const totalSupply = (
-          await solanaConnection.getTokenSupply(new PublicKey(tokenAddress))
-        ).value.uiAmount;
+        const [tokenAudit, holdersData] = await Promise.all([
+          auditToken(tokenAddress),
+          getTokenHolders(tokenAddress),
+        ]);
+        // const addresses = await solanaConnection.getTokenLargestAccounts(token);
+        const { tokenSupply: totalSupply, tokenDecimals: decimals } =
+          tokenAudit.tokenDetails;
 
-        const balances = addresses.value.slice(0, 10);
+        // Holders information
+        const holders: string[] = [];
         let top2Hold = 0;
         let top10Hold = 0;
-        const balancesText = balances
-          .map((balance, index) => {
-            const address = balance?.address.toString();
+        for (const [index, holderData] of holdersData.topHolders
+          .slice(0, 10)
+          .entries()) {
+          const { accountAddress, tokenBalance: hexValue } = holderData;
+          const tokenBalance = Number(
+            BigInt(hexValue) / 10n ** BigInt(decimals)
+          );
+          const held = parseFloat(((tokenBalance / totalSupply) * 100).toFixed(1)); // prettier-ignore
+          const holding = cleanUpBotMessage(held); // prettier-ignore
 
-            if (balance.uiAmount && totalSupply) {
-              const held = ((balance.uiAmount / totalSupply) * 100).toFixed(2);
-              if (index < 2) top2Hold += parseFloat(held);
-              top10Hold += parseFloat(held);
-              const percHeld = cleanUpBotMessage(held);
-              return `[${percHeld}%](https://solscan.io/account/${address})`;
-            }
-          })
-          .slice(0, 5)
-          .join(" \\| ");
+          if (index < 2) top2Hold += held;
+          top10Hold += held;
+
+          const url = `https://etherscan.io/address/${accountAddress}`;
+          const is_contract = await isContract(accountAddress);
+          const text = `${index + 1}\\. [${
+            is_contract ? "📜" : "👨"
+          } ${holding}%](${url})`;
+          holders.push(text);
+        }
+        const balancesText = holders.slice(0, 5).join("\n");
+
+        // const balances = addresses.value.slice(0, 10);
+        // let top2Hold = 0;
+        // let top10Hold = 0;
+        // const balancesText = balances
+        //   .map((balance, index) => {
+        //     const address = balance?.address.toString();
+
+        //     if (balance.uiAmount && totalSupply) {
+        //       const held = ((balance.uiAmount / totalSupply) * 100).toFixed(2);
+        //       if (index < 2) top2Hold += parseFloat(held);
+        //       top10Hold += parseFloat(held);
+        //       const percHeld = cleanUpBotMessage(held);
+        //       return `[${percHeld}%](https://solscan.io/account/${address})`;
+        //     }
+        //   })
+        //   .slice(0, 5)
+        //   .join(" \\| ");
 
         if (top2Hold >= 70) continue;
 
@@ -118,14 +146,14 @@ export async function sendAlert(pairs: PhotonPairData[]) {
 
         // Token Info
         const initliquidity = cleanUpBotMessage(
-          formatToInternational(Number(init_liq.quote).toFixed(2))
+          formatToInternational(Number(init_liq.eth).toFixed(2))
         );
         const initliquidityUsd = cleanUpBotMessage(
           formatToInternational(Number(init_liq.usd).toFixed(2))
         );
 
         const liquidity = cleanUpBotMessage(
-          formatToInternational(cur_liq.quote.toFixed(2))
+          formatToInternational(Number(cur_liq.eth).toFixed(2))
         );
         const liquidityUsd = cleanUpBotMessage(
           formatToInternational(cur_liq.usd)
@@ -133,10 +161,11 @@ export async function sendAlert(pairs: PhotonPairData[]) {
         const hypeScore = getRandomInteger();
 
         // Audit
-        const { lp_burned_perc, mint_authority } = audit;
+        const { mint_authority } = audit;
+        const burntLp = tokenAudit.tokenDynamicDetails.lp_Burned_Percent || 0;
         const mintStatus = !mint_authority ? "🟥" : "🟩";
         const mintText = !mint_authority ? "Enabled" : "Disabled";
-        const isLpStatusOkay = lp_burned_perc === 100;
+        const isLpStatusOkay = Boolean(tokenAudit.tokenDynamicDetails.lp_Locks);
         const lpStatus = isLpStatusOkay ? "🟩" : "⚠️";
         const issues = Number(!isLpStatusOkay) + Number(!mint_authority);
         const issuesText = issues === 1 ? `1 issue` : `${issues} issues`;
@@ -149,10 +178,10 @@ export async function sendAlert(pairs: PhotonPairData[]) {
 
         const lpText = isLpStatusOkay
           ? "All LP Tokens burnt"
-          : `Deployer owns ${(100 - lp_burned_perc).toFixed(0)}% of LP`;
+          : `Deployer owns ${(100 - burntLp).toFixed(0)}% of LP`;
 
         // Text
-        const text = `Powered By [TOOLS AI FOMO ALERT GAINS](https://t.me/ToolsAiFomoAlerts_Solana) \\| Hype Alert
+        const text = `Powered By [TOOLS AI \\| FOMO ALERT \\(ETH\\)](https://t.me/ToolsAiFomoAlerts_ETH)
       
 ${hardCleanUpBotMessage(name)} \\| [${hardCleanUpBotMessage(
           symbol
@@ -184,7 +213,7 @@ Buy:
 [Photon](${photonLink}) \\| [SolTradeBot](${solanaTradingBotLink}) \\| [BonkBot](${bonkBotLink})
 [Magnum](${magnumLink}) \\| [BananaGun](${bananaLink}) \\| [Unibot](${unibot})
 
-Powered By [TOOLS AI FOMO ALERT GAINS](https://t.me/ToolsAiFomoAlerts_Solana)${promoText}`;
+Powered By [TOOLS AI \\| FOMO ALERT \\(ETH\\)](https://t.me/ToolsAiFomoAlerts_ETH)${promoText}`;
 
         try {
           const message = await teleBot.api.sendMessage(CHANNEL_ID, text, {
@@ -211,6 +240,6 @@ Powered By [TOOLS AI FOMO ALERT GAINS](https://t.me/ToolsAiFomoAlerts_Solana)${p
 
     setIndexedTokens(newIndexedTokens);
   } catch (error) {
-    errorHandler(error);
+    errorHandler(error, true);
   }
 }

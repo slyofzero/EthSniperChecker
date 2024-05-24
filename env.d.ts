@@ -11,6 +11,7 @@ declare global {
       FIREBASE_KEY: string | undefined;
       ENCRYPTION_KEY: string | undefined;
       BOT_INVITE_LINK: string | undefined;
+      ALCHEMY_API_KEY: string | undefined;
     }
   }
 }
